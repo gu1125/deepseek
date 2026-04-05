@@ -3,7 +3,7 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0, user-scalable=yes">
-    <title>DeepSeek智能助手</title>
+    <title>DeepSeek智能助手 - 带记忆功能</title>
     <style>
         * {
             margin: 0;
@@ -134,24 +134,38 @@
             border-radius: 12px;
             font-size: 0.8rem;
         }
+
+        .context-info {
+            background: #e8f0fe;
+            padding: 6px 12px;
+            font-size: 0.7rem;
+            color: #10a37f;
+            text-align: center;
+            border-top: 1px solid #ddd;
+            flex-shrink: 0;
+        }
     </style>
 </head>
 <body>
 
 <div class="header">
-    <h1>🤖 DeepSeek 助手</h1>
+    <h1>🧠 DeepSeek 助手</h1>
     <button class="new-btn" id="newBtn">✨ 新对话</button>
 </div>
 
 <div class="chat-area" id="chatArea">
     <div class="message bot">
-        <div class="bubble">你好！我是 DeepSeek 助手，有什么可以帮你的吗？😊</div>
+        <div class="bubble">你好！我是 DeepSeek 助手，我可以记住我们的对话上下文。你可以连续问我问题，我会记得之前聊过什么！😊</div>
     </div>
 </div>
 
 <div class="input-area">
     <input type="text" id="inputBox" placeholder="输入消息..." autocomplete="off">
     <button id="sendBtn">发送</button>
+</div>
+
+<div class="context-info" id="contextInfo">
+    📝 上下文记忆已开启
 </div>
 
 <script>
@@ -162,24 +176,46 @@
     
     const API_URL = 'https://api.deepseek.com/chat/completions';
     
-    let history = [];
+    // ========== 核心：存储对话历史（这就是记住上下文的关键） ==========
+    // 每条消息格式：{ role: "user" 或 "assistant", content: "消息内容" }
+    let conversationHistory = [];
     
+    // 可选：设置最大保留消息数量（保留最近20条，约10轮对话）
+    const MAX_HISTORY = 20;
+    
+    // DOM 元素
     const chatArea = document.getElementById('chatArea');
     const inputBox = document.getElementById('inputBox');
     const sendBtn = document.getElementById('sendBtn');
     const newBtn = document.getElementById('newBtn');
+    const contextInfo = document.getElementById('contextInfo');
     
-    function addMessage(content, role) {
+    // 更新上下文信息显示
+    function updateContextInfo() {
+        const messageCount = conversationHistory.length;
+        const roundCount = Math.ceil(messageCount / 2);
+        if (messageCount === 0) {
+            contextInfo.innerHTML = '📝 上下文记忆已开启（当前无历史记录）';
+        } else {
+            contextInfo.innerHTML = `🧠 已记住 ${messageCount} 条消息（约 ${roundCount} 轮对话）| 点击「新对话」可清空记忆`;
+        }
+    }
+    
+    // 添加消息到界面
+    function addMessageToUI(content, role) {
         const msgDiv = document.createElement('div');
         msgDiv.className = `message ${role === 'user' ? 'user' : 'bot'}`;
+        
         const bubble = document.createElement('div');
         bubble.className = 'bubble';
         bubble.innerHTML = content.replace(/\n/g, '<br>');
+        
         msgDiv.appendChild(bubble);
         chatArea.appendChild(msgDiv);
         chatArea.scrollTop = chatArea.scrollHeight;
     }
     
+    // 显示/隐藏"正在输入"
     let typingDiv = null;
     function showTyping() {
         if (typingDiv) typingDiv.remove();
@@ -196,6 +232,7 @@
         }
     }
     
+    // 显示错误
     function showError(msg) {
         const errDiv = document.createElement('div');
         errDiv.className = 'message bot';
@@ -204,86 +241,120 @@
         chatArea.scrollTop = chatArea.scrollHeight;
     }
     
-    async function callDeepSeek(userMsg) {
-        history.push({ role: 'user', content: userMsg });
-        if (history.length > 10) history = history.slice(-10);
+    // ========== 核心：调用 DeepSeek API（会发送完整对话历史） ==========
+    async function callDeepSeekAPI(userMessage) {
+        // 1. 先把用户当前消息加入历史记录
+        conversationHistory.push({ role: "user", content: userMessage });
         
+        // 2. 限制历史长度（保留最近的消息，防止超出 token 限制）
+        if (conversationHistory.length > MAX_HISTORY) {
+            conversationHistory = conversationHistory.slice(-MAX_HISTORY);
+        }
+        
+        // 3. 构建请求体 - 关键：把整个对话历史发给 API
         const payload = {
-            model: 'deepseek-chat',
-            messages: history,
+            model: "deepseek-chat",
+            messages: conversationHistory,  // 这里发送全部历史，AI 就能记住上下文
             stream: false,
             temperature: 0.7,
             max_tokens: 2048
         };
         
+        console.log("发送给API的消息数量:", conversationHistory.length);
+        
+        // 4. 发送请求
         const response = await fetch(API_URL, {
-            method: 'POST',
+            method: "POST",
             headers: {
-                'Content-Type': 'application/json',
-                'Authorization': `Bearer ${API_KEY}`
+                "Content-Type": "application/json",
+                "Authorization": `Bearer ${API_KEY}`
             },
             body: JSON.stringify(payload)
         });
         
         if (!response.ok) {
-            const err = await response.json();
-            let msg = `请求失败 (${response.status})`;
-            if (err.error?.message) msg = err.error.message;
-            throw new Error(msg);
+            const errData = await response.json();
+            let errorMsg = `请求失败 (${response.status})`;
+            if (errData.error && errData.error.message) {
+                errorMsg = errData.error.message;
+            }
+            throw new Error(errorMsg);
         }
         
         const data = await response.json();
-        const reply = data.choices[0].message.content;
+        const assistantReply = data.choices[0].message.content;
         
-        history.push({ role: 'assistant', content: reply });
-        if (history.length > 10) history = history.slice(-10);
+        // 5. 把 AI 的回复也加入历史记录（这样下次对话就能记住之前说过什么）
+        conversationHistory.push({ role: "assistant", content: assistantReply });
         
-        return reply;
+        // 6. 再次限制历史长度
+        if (conversationHistory.length > MAX_HISTORY) {
+            conversationHistory = conversationHistory.slice(-MAX_HISTORY);
+        }
+        
+        updateContextInfo();
+        
+        return assistantReply;
     }
     
+    // 发送消息主流程
     async function sendMessage() {
         const text = inputBox.value.trim();
         if (!text) return;
         
         inputBox.value = '';
-        addMessage(text, 'user');
+        addMessageToUI(text, 'user');
         showTyping();
         
         try {
-            const reply = await callDeepSeek(text);
+            const reply = await callDeepSeekAPI(text);
             hideTyping();
-            addMessage(reply, 'bot');
+            addMessageToUI(reply, 'bot');
         } catch (err) {
             hideTyping();
-            console.error(err);
-            if (err.message.includes('API key') || err.message.includes('401') || err.message.includes('Incorrect')) {
-                showError('API Key 无效，请检查代码中的密钥是否正确');
+            console.error("详细错误:", err);
+            
+            if (err.message.includes("API key") || err.message.includes("401") || err.message.includes("Incorrect") || err.message.includes("invalid")) {
+                showError("API Key 无效，请检查代码中的密钥是否正确");
+            } else if (err.message.includes("network") || err.message.includes("fetch")) {
+                showError("网络连接失败，请检查网络后刷新重试");
             } else {
                 showError(`错误：${err.message}`);
             }
-            if (history.length > 0 && history[history.length-1].role === 'user') {
-                history.pop();
+            
+            // 调用失败，移除刚才加入历史的那条用户消息
+            if (conversationHistory.length > 0 && conversationHistory[conversationHistory.length - 1].role === "user") {
+                conversationHistory.pop();
             }
+            updateContextInfo();
         }
     }
     
+    // 新对话（清空历史记录，AI 将忘记之前的一切）
     function newConversation() {
-        history = [];
+        conversationHistory = [];
         chatArea.innerHTML = '';
+        
         const welcome = document.createElement('div');
         welcome.className = 'message bot';
-        welcome.innerHTML = '<div class="bubble">✨ 新对话开始啦！有什么想问的吗？</div>';
+        welcome.innerHTML = '<div class="bubble">✨ 新对话开始啦！之前的记忆已清空，我会重新认识你～</div>';
         chatArea.appendChild(welcome);
+        
+        updateContextInfo();
     }
     
+    // 绑定事件
     sendBtn.addEventListener('click', sendMessage);
     inputBox.addEventListener('keypress', (e) => {
         if (e.key === 'Enter') sendMessage();
     });
     newBtn.addEventListener('click', newConversation);
     
+    // 检查 API Key
     if (!API_KEY || API_KEY === '你的-API-Key') {
         showError('⚠️ 请先在代码中填入你的 DeepSeek API Key');
+    } else {
+        updateContextInfo();
     }
 </script>
 
