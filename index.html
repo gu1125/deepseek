@@ -11,10 +11,15 @@
             box-sizing: border-box;
         }
 
+        html, body {
+            height: 100%;
+            overflow: hidden;
+        }
+
         body {
             font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Helvetica, Arial, sans-serif;
             background: #f5f5f5;
-            height: 100vh;
+            height: 100%;
             display: flex;
             overflow: hidden;
         }
@@ -137,6 +142,8 @@
             display: flex;
             flex-direction: column;
             background: #ffffff;
+            height: 100%;
+            min-height: 0;  /* 关键：防止flex溢出 */
         }
 
         .top-bar {
@@ -166,7 +173,7 @@
             flex: 1;
         }
 
-        .theme-toggle, .settings-btn {
+        .theme-toggle {
             background: none;
             border: none;
             font-size: 1.2rem;
@@ -174,6 +181,7 @@
             padding: 8px;
         }
 
+        /* 聊天区域 - 关键修复 */
         .chat-area {
             flex: 1;
             overflow-y: auto;
@@ -181,6 +189,7 @@
             display: flex;
             flex-direction: column;
             gap: 16px;
+            min-height: 0;  /* 关键修复 */
         }
 
         .message {
@@ -243,9 +252,11 @@
             background: #e5e5e5;
         }
 
+        /* 输入区域 - 关键修复 */
         .input-area {
             background: #ffffff;
             padding: 12px 16px;
+            padding-bottom: max(12px, env(safe-area-inset-bottom));
             border-top: 1px solid #e5e5e5;
             display: flex;
             gap: 10px;
@@ -259,6 +270,7 @@
             padding: 12px 16px;
             font-size: 1rem;
             outline: none;
+            background: white;
         }
 
         .input-area input:focus {
@@ -278,10 +290,6 @@
         .input-area button:disabled {
             opacity: 0.5;
             cursor: not-allowed;
-        }
-
-        .stop-btn {
-            background: #dc3545 !important;
         }
 
         .typing {
@@ -363,6 +371,7 @@
             display: block;
         }
 
+        /* 平板及以上设备 */
         @media (min-width: 768px) {
             .sidebar {
                 transform: translateX(0);
@@ -374,6 +383,25 @@
             }
             .overlay {
                 display: none !important;
+            }
+        }
+
+        /* 手机端优化 */
+        @media (max-width: 767px) {
+            .bubble {
+                font-size: 0.9rem;
+                padding: 10px 14px;
+            }
+            .input-area {
+                padding: 10px 12px;
+                padding-bottom: max(10px, env(safe-area-inset-bottom));
+            }
+            .input-area input {
+                padding: 10px 14px;
+                font-size: 0.95rem;
+            }
+            .input-area button {
+                padding: 0 18px;
             }
         }
     </style>
@@ -419,7 +447,7 @@
     const STORAGE_KEY = 'deepseek_sessions';
 
     // 会话数据结构
-    let sessions = [];           // [{ id, title, messages, createdAt, updatedAt }]
+    let sessions = [];
     let currentSessionId = null;
     let isLoading = false;
     let currentAbortController = null;
@@ -447,7 +475,6 @@
         return new Date().toLocaleString();
     }
 
-    // 从消息中提取标题（取第一条用户消息的前30字）
     function extractTitle(messages) {
         const firstUserMsg = messages.find(m => m.role === 'user');
         if (firstUserMsg) {
@@ -458,7 +485,13 @@
         return '新对话';
     }
 
-    // ========== 保存会话到本地 ==========
+    function escapeHtml(text) {
+        const div = document.createElement('div');
+        div.textContent = text;
+        return div.innerHTML;
+    }
+
+    // ========== 保存会话 ==========
     function saveSessions() {
         try {
             localStorage.setItem(STORAGE_KEY, JSON.stringify(sessions));
@@ -473,7 +506,6 @@
             const saved = localStorage.getItem(STORAGE_KEY);
             if (saved) {
                 sessions = JSON.parse(saved);
-                // 确保每个会话都有必要的字段
                 for (const session of sessions) {
                     if (!session.messages) session.messages = [];
                     if (!session.id) session.id = generateId();
@@ -509,11 +541,9 @@
             saveSessions();
             
             if (sessions.length === 0) {
-                // 没有会话了，创建一个新的
                 const newSession = createNewSession();
                 currentSessionId = newSession.id;
             } else if (currentSessionId === sessionId) {
-                // 删除的是当前会话，切换到第一个
                 currentSessionId = sessions[0].id;
             }
             
@@ -600,7 +630,7 @@
         chatArea.scrollTop = chatArea.scrollHeight;
     }
 
-    // 添加消息到界面（不保存到session）
+    // 添加消息到界面
     function addMessageToUI(content, role, saveToSession = true) {
         const msgDiv = document.createElement('div');
         msgDiv.className = `message ${role === 'user' ? 'user-message' : 'bot-message'}`;
@@ -611,7 +641,6 @@
         
         msgDiv.appendChild(bubble);
         
-        // 添加操作按钮（仅对AI回复）
         if (role === 'assistant') {
             const actionsDiv = document.createElement('div');
             actionsDiv.className = 'message-actions';
@@ -649,26 +678,22 @@
         }
     }
 
-    // 重新生成最后一条AI回复
+    // 重新生成
     async function regenerateLastMessage() {
         const session = sessions.find(s => s.id === currentSessionId);
         if (!session || session.messages.length === 0) return;
         
-        // 移除最后一条AI回复
         let lastIndex = session.messages.length - 1;
         if (session.messages[lastIndex].role === 'assistant') {
             session.messages.pop();
-            // 重新渲染界面
             chatArea.innerHTML = '';
             for (const msg of session.messages) {
                 addMessageToUI(msg.content, msg.role, false);
             }
             saveSessions();
             
-            // 获取最后一条用户消息
             const lastUserMsg = session.messages[session.messages.length - 1];
             if (lastUserMsg && lastUserMsg.role === 'user') {
-                // 重新发送
                 await callAPIAndRespond(lastUserMsg.content);
             }
         }
@@ -683,7 +708,6 @@
         sendBtn.disabled = true;
         sendBtn.innerText = '发送中...';
         
-        // 构建消息列表
         const messages = session.messages.map(m => ({ role: m.role, content: m.content }));
         
         currentAbortController = new AbortController();
@@ -714,7 +738,6 @@
             const decoder = new TextDecoder();
             let fullReply = '';
             
-            // 创建一个占位消息
             const tempMsgDiv = document.createElement('div');
             tempMsgDiv.className = 'message bot-message';
             const bubble = document.createElement('div');
@@ -745,14 +768,12 @@
                 }
             }
             
-            // 添加完整回复到会话
             session.messages.push({ role: 'assistant', content: fullReply });
             session.updatedAt = getCurrentTime();
             saveSessions();
             updateSessionTitle(currentSessionId);
             renderSessionsList();
             
-            // 替换占位消息为带按钮的完整消息
             tempMsgDiv.remove();
             addMessageToUI(fullReply, 'assistant', false);
             
@@ -782,7 +803,6 @@
         
         inputBox.value = '';
         
-        // 获取当前会话
         let session = sessions.find(s => s.id === currentSessionId);
         if (!session) {
             session = createNewSession();
@@ -790,17 +810,14 @@
             renderSessionsList();
         }
         
-        // 添加用户消息
         session.messages.push({ role: 'user', content: text });
         session.updatedAt = getCurrentTime();
         saveSessions();
         updateSessionTitle(currentSessionId);
         renderSessionsList();
         
-        // 显示用户消息
         addMessageToUI(text, 'user', false);
         
-        // 调用API
         await callAPIAndRespond(text);
     }
 
@@ -816,7 +833,7 @@
         }
     }
 
-    // ========== 深色模式切换 ==========
+    // ========== 深色模式 ==========
     function toggleDarkMode() {
         isDarkMode = !isDarkMode;
         if (isDarkMode) {
@@ -840,16 +857,8 @@
         overlay.classList.remove('show');
     }
 
-    // ========== 辅助函数 ==========
-    function escapeHtml(text) {
-        const div = document.createElement('div');
-        div.textContent = text;
-        return div.innerHTML;
-    }
-
     // ========== 初始化 ==========
     function init() {
-        // 加载深色模式偏好
         const savedDarkMode = localStorage.getItem('darkMode');
         if (savedDarkMode === 'true') {
             isDarkMode = true;
@@ -857,7 +866,6 @@
             themeToggle.innerText = '☀️';
         }
         
-        // 加载会话
         if (!loadSessions() || sessions.length === 0) {
             const newSession = createNewSession();
             sessions = [newSession];
@@ -868,7 +876,6 @@
         renderSessionsList();
         loadSessionToUI(currentSessionId);
         
-        // 绑定事件
         sendBtn.addEventListener('click', sendMessage);
         inputBox.addEventListener('keypress', (e) => {
             if (e.key === 'Enter' && !e.shiftKey) {
@@ -882,7 +889,6 @@
         newChatSideBtn.addEventListener('click', newConversation);
         themeToggle.addEventListener('click', toggleDarkMode);
         
-        // 检查API Key
         if (!API_KEY || API_KEY === '你的-API-Key') {
             const errorDiv = document.createElement('div');
             errorDiv.className = 'message bot-message';
